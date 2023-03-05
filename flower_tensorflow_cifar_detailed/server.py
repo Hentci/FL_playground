@@ -28,16 +28,15 @@ def main() -> None:
     )
 
     class SaveModelStrategy(fl.server.strategy.FedAvg):
-        def saveModel():
-            model.save('./saved_mode')
+        model.save('./saved_mode')
         
 
     # Start Flower server (SSL-enabled) for four rounds of federated learning
     fl.server.start_server(
         server_address="0.0.0.0:8080",
         config=fl.server.ServerConfig(num_rounds=4),
-        # strategy=SaveModelStrategy(strategy)
-        strategy=strategy
+        strategy=SaveModelStrategy(strategy)
+        # strategy=strategy
         # certificates=(
         #     Path(".cache/certificates/ca.crt").read_bytes(),
         #     Path(".cache/certificates/server.pem").read_bytes(),
