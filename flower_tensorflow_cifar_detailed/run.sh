@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# ./certificates/generate.sh
+./certificates/generate.sh
 
 echo "Starting server"
 

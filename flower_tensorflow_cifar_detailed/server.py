@@ -37,11 +37,11 @@ def main() -> None:
         server_address="0.0.0.0:8080",
         config=fl.server.ServerConfig(num_rounds=4),
         strategy=SaveModelStrategy(strategy)
-        # certificates=(
-        #     Path(".cache/certificates/ca.crt").read_bytes(),
-        #     Path(".cache/certificates/server.pem").read_bytes(),
-        #     Path(".cache/certificates/server.key").read_bytes(),
-        # ),
+        certificates=(
+            Path(".cache/certificates/ca.crt").read_bytes(),
+            Path(".cache/certificates/server.pem").read_bytes(),
+            Path(".cache/certificates/server.key").read_bytes(),
+        ),
     )
 
 
