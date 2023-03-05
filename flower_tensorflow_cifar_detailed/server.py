@@ -27,11 +27,16 @@ def main() -> None:
         initial_parameters=fl.common.ndarrays_to_parameters(model.get_weights()),
     )
 
+    class SaveModelStrategy(fl.server.strategy.FedAvg):
+        def saveModel():
+            model.save('./saved_mode')
+        
+
     # Start Flower server (SSL-enabled) for four rounds of federated learning
     fl.server.start_server(
         server_address="0.0.0.0:8080",
         config=fl.server.ServerConfig(num_rounds=4),
-        strategy=strategy,
+        strategy=SaveModelStrategy(strategy)
         certificates=(
             Path(".cache/certificates/ca.crt").read_bytes(),
             Path(".cache/certificates/server.pem").read_bytes(),
