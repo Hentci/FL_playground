@@ -1,89 +1,111 @@
-from typing import Dict, Optional, Tuple
+import argparse
+import os
 from pathlib import Path
 
-import flwr as fl
 import tensorflow as tf
+
+import flwr as fl
+
+# Make TensorFlow logs less verbose
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+
+
+# Define Flower client
+class CifarClient(fl.client.NumPyClient):
+    def __init__(self, model, x_train, y_train, x_test, y_test):
+        self.model = model
+        self.x_train, self.y_train = x_train, y_train
+        self.x_test, self.y_test = x_test, y_test
+
+    def get_properties(self, config):
+        """Get properties of client."""
+        raise Exception("Not implemented")
+
+    def get_parameters(self, config):
+        """Get parameters of the local model."""
+        raise Exception("Not implemented (server-side parameter initialization)")
+
+    def fit(self, parameters, config):
+        """Train parameters on the locally held training set."""
+
+        # Update local model parameters
+        self.model.set_weights(parameters)
+
+        # Get hyperparameters for this round
+        batch_size: int = config["batch_size"]
+        epochs: int = config["local_epochs"]
+
+        # Train the model using hyperparameters from config
+        history = self.model.fit(
+            self.x_train,
+            self.y_train,
+            batch_size,
+            epochs,
+            validation_split=0.1,
+        )
+
+        # Return updated model parameters and results
+        parameters_prime = self.model.get_weights()
+        num_examples_train = len(self.x_train)
+        results = {
+            "loss": history.history["loss"][0],
+            "accuracy": history.history["accuracy"][0],
+            "val_loss": history.history["val_loss"][0],
+            "val_accuracy": history.history["val_accuracy"][0],
+        }
+        return parameters_prime, num_examples_train, results
+
+    def evaluate(self, parameters, config):
+        """Evaluate parameters on the locally held test set."""
+
+        # Update local model with global parameters
+        self.model.set_weights(parameters)
+
+        # Get config values
+        steps: int = config["val_steps"]
+
+        # Evaluate global model parameters on the local test data and return results
+        loss, accuracy = self.model.evaluate(self.x_test, self.y_test, 32, steps=steps)
+        num_examples_test = len(self.x_test)
+        return loss, num_examples_test, {"accuracy": accuracy}
 
 
 def main() -> None:
-    # Load and compile model for
-    # 1. server-side parameter initialization
-    # 2. server-side parameter evaluation
+    # Parse command line argument `partition`
+    parser = argparse.ArgumentParser(description="Flower")
+    parser.add_argument("--partition", type=int, choices=range(0, 10), required=True)
+    args = parser.parse_args()
+
+    # Load and compile Keras model
     model = tf.keras.applications.EfficientNetB0(
         input_shape=(32, 32, 3), weights=None, classes=10
     )
     model.compile("adam", "sparse_categorical_crossentropy", metrics=["accuracy"])
 
-    # Create strategy
-    strategy = fl.server.strategy.FedAvg(
-        fraction_fit=0.3,
-        fraction_evaluate=0.2,
-        min_fit_clients=3,
-        min_evaluate_clients=2,
-        min_available_clients=10,
-        evaluate_fn=get_evaluate_fn(model),
-        on_fit_config_fn=fit_config,
-        on_evaluate_config_fn=evaluate_config,
-        initial_parameters=fl.common.ndarrays_to_parameters(model.get_weights()),
-    )
+    # Load a subset of CIFAR-10 to simulate the local data partition
+    (x_train, y_train), (x_test, y_test) = load_partition(args.partition)
 
-    # Start Flower server (SSL-enabled) for four rounds of federated learning
-    fl.server.start_server(
-        server_address="0.0.0.0:8080",
-        config=fl.server.ServerConfig(num_rounds=4),
-        strategy=strategy,
-        certificates=(
-            Path(".cache/certificates/ca.crt").read_bytes(),
-            Path(".cache/certificates/server.pem").read_bytes(),
-            Path(".cache/certificates/server.key").read_bytes(),
-        ),
+    # Start Flower client
+    client = CifarClient(model, x_train, y_train, x_test, y_test)
+
+    fl.client.start_numpy_client(
+        server_address="127.0.0.1:8080",
+        client=client,
+        # root_certificates=Path(".cache/certificates/ca.crt").read_bytes(),
     )
 
 
-def get_evaluate_fn(model):
-    """Return an evaluation function for server-side evaluation."""
-
-    # Load data and model here to avoid the overhead of doing it in `evaluate` itself
-    (x_train, y_train), _ = tf.keras.datasets.cifar10.load_data()
-
-    # Use the last 5k training examples as a validation set
-    x_val, y_val = x_train[45000:50000], y_train[45000:50000]
-
-    # The `evaluate` function will be called after every round
-    def evaluate(
-        server_round: int,
-        parameters: fl.common.NDArrays,
-        config: Dict[str, fl.common.Scalar],
-    ) -> Optional[Tuple[float, Dict[str, fl.common.Scalar]]]:
-        model.set_weights(parameters)  # Update model with the latest parameters
-        loss, accuracy = model.evaluate(x_val, y_val)
-        return loss, {"accuracy": accuracy}
-
-    return evaluate
-
-
-def fit_config(server_round: int):
-    """Return training configuration dict for each round.
-
-    Keep batch size fixed at 32, perform two rounds of training with one
-    local epoch, increase to two local epochs afterwards.
-    """
-    config = {
-        "batch_size": 32,
-        "local_epochs": 1 if server_round < 2 else 2,
-    }
-    return config
-
-
-def evaluate_config(server_round: int):
-    """Return evaluation configuration dict for each round.
-
-    Perform five local evaluation steps on each client (i.e., use five
-    batches) during rounds one to three, then increase to ten local
-    evaluation steps.
-    """
-    val_steps = 5 if server_round < 4 else 10
-    return {"val_steps": val_steps}
+def load_partition(idx: int):
+    """Load 1/10th of the training and test data to simulate a partition."""
+    assert idx in range(10)
+    (x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+    return (
+        x_train[idx * 5000 : (idx + 1) * 5000],
+        y_train[idx * 5000 : (idx + 1) * 5000],
+    ), (
+        x_test[idx * 1000 : (idx + 1) * 1000],
+        y_test[idx * 1000 : (idx + 1) * 1000],
+    )
 
 
 if __name__ == "__main__":
